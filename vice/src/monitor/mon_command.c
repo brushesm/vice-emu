@@ -262,8 +262,8 @@ static const mon_cmds_t mon_cmd_array[] = {
       " per-instruction profiling for function"
       " in a call graph context.\n"
       "prof clear <function> - Clears all profiling stats for function.\n"
-      "prof export csv <file> - Export flat profile to CSV file.\n"
-      "prof export callgrind <file> - Export call graph in Callgrind format (for KCachegrind).\n",
+      "prof export callgrind <file> - Export call graph in Callgrind format.\n"
+      "prof export callgrind detailed <file> - Export with per-instruction disassembly.\n",
       NO_FILENAME_ARG
     },
 
