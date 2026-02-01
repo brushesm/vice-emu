@@ -50,14 +50,15 @@ jobs:
           brew install lame flac libvorbis giflib libpcap
 
           # Ensure symlinks are created (needed after cache restore)
-          brew link --overwrite autoconf automake pkg-config || true
+          brew link --overwrite autoconf automake pkg-config dos2unix texinfo xa || true
 
           # Clean up to reduce cache size
           brew cleanup
 
-          # Verify autoconf is available
-          which autoconf
-          autoconf --version
+          # Verify tools are available
+          echo "Checking build tools..."
+          which autoconf automake pkg-config dos2unix
+          autoconf --version | head -1
 
       - name: Generate configure script
         working-directory: vice
