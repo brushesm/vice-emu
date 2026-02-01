@@ -92,13 +92,10 @@ jobs:
         working-directory: build
         env:
           DEPS_PREFIX: ${{ steps.homebrew.outputs.prefix }}
-          # Sanitize branch name - replace / with - to avoid path issues in build dir name
-          GITHUB_REF_NAME: ${{ github.ref_name && format('{0}', github.ref_name) || 'main' }}
         run: |
           echo "Using DEPS_PREFIX=$DEPS_PREFIX"
-          # Sanitize GITHUB_REF_NAME to replace / with -
-          export GITHUB_REF_NAME="${GITHUB_REF_NAME//\//-}"
-          echo "Using GITHUB_REF_NAME=$GITHUB_REF_NAME"
+          # Unset GITHUB_REF_NAME so build dir is just "vice-<arch>-<ui>-<version>"
+          unset GITHUB_REF_NAME
           make bindistzip
 
       - name: List distribution artifacts

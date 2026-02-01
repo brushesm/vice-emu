@@ -250,7 +250,7 @@ static const mon_cmds_t mon_cmd_array[] = {
 
 
     { "profile", "prof",
-      "[on|off]|[flat [num]]|[graph [context] [depth]]|[func <function>]",
+      "[on|off]|[flat [num]]|[graph [context] [depth]]|[func <function>]|[export <format> <file>]",
       "Main CPU profiling functions. Commands:\n"
       "prof on - Start profiling and flush old profiling data.\n"
       "prof off - Stop profiling.\n"
@@ -261,7 +261,9 @@ static const mon_cmds_t mon_cmd_array[] = {
       "prof context <ctx> - Detailed context information including "
       " per-instruction profiling for function"
       " in a call graph context.\n"
-      "prof clear <function> - Clears all profiling stats for function.\n",
+      "prof clear <function> - Clears all profiling stats for function.\n"
+      "prof export csv <file> - Export flat profile to CSV file.\n"
+      "prof export callgrind <file> - Export call graph in Callgrind format (for KCachegrind).\n",
       NO_FILENAME_ARG
     },
 
