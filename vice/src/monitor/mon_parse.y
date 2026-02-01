@@ -155,7 +155,7 @@ void set_yydebug(int val);
 %token CMD_COMMENT CMD_LIST CMD_STOPWATCH RESET
 %token CMD_EXPORT CMD_AUTOSTART CMD_AUTOLOAD CMD_MAINCPU_TRACE
 %token CMD_WARP
-%token CMD_PROFILE FLAT GRAPH FUNC DEPTH DISASS PROFILE_CONTEXT CLEAR PROFILE_EXPORT FORMAT_CALLGRIND DETAILED
+%token CMD_PROFILE FLAT GRAPH FUNC DEPTH DISASS PROFILE_CONTEXT CLEAR PROFILE_EXPORT
 %token<str> CMD_LABEL_ASGN
 %token<i> L_PAREN R_PAREN ARG_IMMEDIATE REG_A REG_X REG_Y COMMA INST_SEP
 %token<i> L_BRACKET R_BRACKET LESS_THAN REG_U REG_S REG_PC REG_PCR
@@ -621,10 +621,8 @@ monitor_misc_rules: CMD_DISK rest_of_line end_cmd
                      { mon_profile_clear($3); }
                   | CMD_PROFILE PROFILE_CONTEXT d_number end_cmd
                      { mon_profile_disass_context($3); }
-                  | CMD_PROFILE PROFILE_EXPORT FORMAT_CALLGRIND STRING end_cmd
-                     { mon_profile_export_callgrind($4, 0); }
-                  | CMD_PROFILE PROFILE_EXPORT FORMAT_CALLGRIND DETAILED STRING end_cmd
-                     { mon_profile_export_callgrind($5, 1); }
+                  | CMD_PROFILE PROFILE_EXPORT STRING end_cmd
+                     { mon_profile_export($3); }
                   ;
 
 disk_rules: CMD_LOAD filename device_num opt_address end_cmd

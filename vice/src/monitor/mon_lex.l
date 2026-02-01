@@ -271,9 +271,7 @@ depth		{ return DEPTH; }
 disass		{ return DISASS; }
 context	{ return PROFILE_CONTEXT; }
 clear		{ return CLEAR; }
-export		{ return PROFILE_EXPORT; }
-callgrind	{ return FORMAT_CALLGRIND; }
-detailed	{ return DETAILED; }
+export		{ BEGIN(FNAME); return PROFILE_EXPORT; }
 
 load { yylval.i = e_load; return MEM_OP; }
 store { yylval.i = e_store; return MEM_OP; }

@@ -1199,18 +1199,34 @@ static const char *get_interrupt_context(profiling_context_t *context) {
     return buf;
 }
 
-/* Helper structure for callgrind export - per-instruction data */
-typedef struct callgrind_instr_s {
+/* ============================================================================
+ * CALLGRIND EXPORT WITH PSEUDO-SOURCE
+ *
+ * This generates two files:
+ * 1. A pseudo-source .asm file with one instruction per line
+ * 2. A Callgrind file referencing the pseudo-source with line numbers
+ *
+ * This allows Callgrind viewers (KCachegrind, Blacksmith) to show
+ * per-instruction costs with the actual disassembly visible.
+ * ============================================================================ */
+
+/* Global instruction table for building pseudo-source */
+typedef struct instr_entry_s {
     uint16_t addr;
-    profiling_counter_t cycles;
-    profiling_counter_t samples;
-    struct callgrind_instr_s *next;
-} callgrind_instr_t;
+    uint32_t line_num;      /* Line number in pseudo-source file */
+    profiling_counter_t total_cycles;
+    profiling_counter_t total_samples;
+} instr_entry_t;
+
+static instr_entry_t *global_instrs = NULL;
+static int global_instrs_count = 0;
+static int global_instrs_capacity = 0;
 
 /* Helper structure for callgrind export - call edges */
 typedef struct callgrind_call_s {
+    uint16_t caller_addr;   /* Address of call site (for line lookup) */
     uint16_t callee_addr;
-    char callee_irq_ctx[64];  /* interrupt context of callee */
+    char callee_irq_ctx[64];
     profiling_counter_t cycles;
     profiling_counter_t count;
     struct callgrind_call_s *next;
@@ -1219,16 +1235,75 @@ typedef struct callgrind_call_s {
 /* Helper structure for callgrind export - function data */
 typedef struct callgrind_func_s {
     uint16_t addr;
-    char irq_ctx[64];  /* interrupt context string e.g. "[IRQ]" */
+    char irq_ctx[64];
     profiling_counter_t self_cycles;
+    profiling_counter_t self_samples;
     profiling_counter_t total_cycles;
     profiling_counter_t num_calls;
+    uint16_t *instr_addrs;  /* Array of instruction addresses in this function */
+    int instr_count;
+    int instr_capacity;
     callgrind_call_t *calls;
-    callgrind_instr_t *instrs;  /* per-instruction data for detailed mode */
     struct callgrind_func_s *next;
 } callgrind_func_t;
 
 static callgrind_func_t *callgrind_funcs = NULL;
+
+/* Add instruction to global table (for pseudo-source generation) */
+static void add_global_instr(uint16_t addr, profiling_counter_t cycles, profiling_counter_t samples) {
+    int i;
+
+    /* Check if already exists */
+    for (i = 0; i < global_instrs_count; i++) {
+        if (global_instrs[i].addr == addr) {
+            global_instrs[i].total_cycles += cycles;
+            global_instrs[i].total_samples += samples;
+            return;
+        }
+    }
+
+    /* Grow array if needed */
+    if (global_instrs_count >= global_instrs_capacity) {
+        global_instrs_capacity = global_instrs_capacity ? global_instrs_capacity * 2 : 256;
+        global_instrs = lib_realloc(global_instrs, global_instrs_capacity * sizeof(instr_entry_t));
+    }
+
+    /* Add new entry */
+    global_instrs[global_instrs_count].addr = addr;
+    global_instrs[global_instrs_count].line_num = 0;  /* Assigned later after sorting */
+    global_instrs[global_instrs_count].total_cycles = cycles;
+    global_instrs[global_instrs_count].total_samples = samples;
+    global_instrs_count++;
+}
+
+/* Compare function for sorting instructions by address */
+static int instr_addr_compare(const void *a, const void *b) {
+    const instr_entry_t *ia = (const instr_entry_t *)a;
+    const instr_entry_t *ib = (const instr_entry_t *)b;
+    return (int)ia->addr - (int)ib->addr;
+}
+
+/* Binary search for instruction entry by address (array must be sorted) */
+static instr_entry_t *find_instr_entry(uint16_t addr) {
+    int lo = 0, hi = global_instrs_count - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (global_instrs[mid].addr == addr) {
+            return &global_instrs[mid];
+        } else if (global_instrs[mid].addr < addr) {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return NULL;
+}
+
+/* Look up line number for an instruction address */
+static uint32_t get_line_for_addr(uint16_t addr) {
+    instr_entry_t *entry = find_instr_entry(addr);
+    return entry ? entry->line_num : 0;
+}
 
 static callgrind_func_t *find_or_create_callgrind_func(uint16_t addr, const char *irq_ctx) {
     callgrind_func_t *f = callgrind_funcs;
@@ -1246,28 +1321,22 @@ static callgrind_func_t *find_or_create_callgrind_func(uint16_t addr, const char
     return f;
 }
 
-static void add_callgrind_instr(callgrind_func_t *func, uint16_t addr,
-                                 profiling_counter_t cycles, profiling_counter_t samples) {
-    callgrind_instr_t *i = func->instrs;
-    while (i) {
-        if (i->addr == addr) {
-            i->cycles += cycles;
-            i->samples += samples;
-            return;
-        }
-        i = i->next;
+static void add_func_instr(callgrind_func_t *func, uint16_t addr) {
+    int i;
+    /* Check if already in list */
+    for (i = 0; i < func->instr_count; i++) {
+        if (func->instr_addrs[i] == addr) return;
     }
-    /* Create new instruction entry */
-    i = lib_calloc(1, sizeof(callgrind_instr_t));
-    i->addr = addr;
-    i->cycles = cycles;
-    i->samples = samples;
-    i->next = func->instrs;
-    func->instrs = i;
+    /* Grow array if needed */
+    if (func->instr_count >= func->instr_capacity) {
+        func->instr_capacity = func->instr_capacity ? func->instr_capacity * 2 : 64;
+        func->instr_addrs = lib_realloc(func->instr_addrs, func->instr_capacity * sizeof(uint16_t));
+    }
+    func->instr_addrs[func->instr_count++] = addr;
 }
 
-static void add_callgrind_call(callgrind_func_t *caller, uint16_t callee_addr,
-                               const char *callee_irq_ctx,
+static void add_callgrind_call(callgrind_func_t *caller, uint16_t caller_site_addr,
+                               uint16_t callee_addr, const char *callee_irq_ctx,
                                profiling_counter_t cycles, profiling_counter_t count) {
     callgrind_call_t *c = caller->calls;
     while (c) {
@@ -1280,6 +1349,7 @@ static void add_callgrind_call(callgrind_func_t *caller, uint16_t callee_addr,
     }
     /* Create new call entry */
     c = lib_calloc(1, sizeof(callgrind_call_t));
+    c->caller_addr = caller_site_addr;
     c->callee_addr = callee_addr;
     strncpy(c->callee_irq_ctx, callee_irq_ctx, sizeof(c->callee_irq_ctx) - 1);
     c->callee_irq_ctx[sizeof(c->callee_irq_ctx) - 1] = '\0';
@@ -1289,32 +1359,38 @@ static void add_callgrind_call(callgrind_func_t *caller, uint16_t callee_addr,
     caller->calls = c;
 }
 
+/* Collect all instruction data from context tree */
 static void collect_callgrind_data(profiling_context_t *context,
-                                    profiling_context_t *parent_context,
-                                    int detailed) {
+                                    profiling_context_t *parent_context) {
     callgrind_func_t *func;
     uint16_t func_addr = context->pc_dst;
     const char *irq_ctx = get_interrupt_context(context);
     int page_idx, addr_idx;
 
-    /* Get or create function entry (unique by addr + interrupt context) */
+    /* Get or create function entry */
     func = find_or_create_callgrind_func(func_addr, irq_ctx);
-    func->self_cycles += context->total_cycles_self;
     func->total_cycles += context->total_cycles;
     func->num_calls += context->num_enters > 0 ? context->num_enters : 1;
 
-    /* Collect per-instruction data for detailed mode */
-    if (detailed) {
-        for (page_idx = 0; page_idx < 256; page_idx++) {
-            profiling_page_t *page = context->page[page_idx];
-            if (page) {
-                for (addr_idx = 0; addr_idx < 256; addr_idx++) {
-                    if (page->data[addr_idx].touched) {
-                        uint16_t instr_addr = (page_idx << 8) | addr_idx;
-                        add_callgrind_instr(func, instr_addr,
-                                           page->data[addr_idx].num_cycles,
-                                           page->data[addr_idx].num_samples);
-                    }
+    /* Collect per-instruction data */
+    for (page_idx = 0; page_idx < 256; page_idx++) {
+        profiling_page_t *page = context->page[page_idx];
+        if (page) {
+            for (addr_idx = 0; addr_idx < 256; addr_idx++) {
+                if (page->data[addr_idx].touched) {
+                    uint16_t instr_addr = (page_idx << 8) | addr_idx;
+                    profiling_counter_t cycles = page->data[addr_idx].num_cycles;
+                    profiling_counter_t samples = page->data[addr_idx].num_samples;
+
+                    /* Add to global instruction table */
+                    add_global_instr(instr_addr, cycles, samples);
+
+                    /* Track which instructions belong to this function */
+                    add_func_instr(func, instr_addr);
+
+                    /* Accumulate self costs */
+                    func->self_cycles += cycles;
+                    func->self_samples += samples;
                 }
             }
         }
@@ -1324,7 +1400,9 @@ static void collect_callgrind_data(profiling_context_t *context,
     if (parent_context != NULL) {
         const char *parent_irq_ctx = get_interrupt_context(parent_context);
         callgrind_func_t *parent = find_or_create_callgrind_func(parent_context->pc_dst, parent_irq_ctx);
-        add_callgrind_call(parent, func_addr, irq_ctx, context->total_cycles,
+        /* Use pc_src as the call site address */
+        add_callgrind_call(parent, context->pc_src, func_addr, irq_ctx,
+                          context->total_cycles,
                           context->num_enters > 0 ? context->num_enters : 1);
     }
 
@@ -1332,7 +1410,7 @@ static void collect_callgrind_data(profiling_context_t *context,
     if (context->child) {
         profiling_context_t *c = context->child;
         do {
-            collect_callgrind_data(c, context, detailed);
+            collect_callgrind_data(c, context);
             c = c->next;
         } while (c != context->child);
     }
@@ -1343,21 +1421,25 @@ static void free_callgrind_data(void) {
     while (f) {
         callgrind_func_t *next_f = f->next;
         callgrind_call_t *c = f->calls;
-        callgrind_instr_t *i = f->instrs;
         while (c) {
             callgrind_call_t *next_c = c->next;
             lib_free(c);
             c = next_c;
         }
-        while (i) {
-            callgrind_instr_t *next_i = i->next;
-            lib_free(i);
-            i = next_i;
+        if (f->instr_addrs) {
+            lib_free(f->instr_addrs);
         }
         lib_free(f);
         f = next_f;
     }
     callgrind_funcs = NULL;
+
+    if (global_instrs) {
+        lib_free(global_instrs);
+        global_instrs = NULL;
+    }
+    global_instrs_count = 0;
+    global_instrs_capacity = 0;
 }
 
 /* Build function name with interrupt context if present */
@@ -1372,23 +1454,132 @@ static const char *get_callgrind_func_name(uint16_t addr, const char *irq_ctx) {
     return name;
 }
 
-void mon_profile_export_callgrind(const char *filename, int detailed)
+/* Generate pseudo-source filename from callgrind filename */
+static void get_asm_filename(const char *callgrind_file, char *asm_file, size_t asm_file_size) {
+    const char *dot;
+    size_t base_len;
+
+    dot = strrchr(callgrind_file, '.');
+    if (dot) {
+        base_len = dot - callgrind_file;
+        if (base_len >= asm_file_size - 5) {
+            base_len = asm_file_size - 5;
+        }
+        strncpy(asm_file, callgrind_file, base_len);
+        asm_file[base_len] = '\0';
+    } else {
+        strncpy(asm_file, callgrind_file, asm_file_size - 5);
+        asm_file[asm_file_size - 5] = '\0';
+    }
+    strcat(asm_file, ".asm");
+}
+
+/* Get just the basename of a path */
+static const char *get_basename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    const char *backslash = strrchr(path, '\\');
+    const char *last = slash > backslash ? slash : backslash;
+    return last ? last + 1 : path;
+}
+
+/* Write pseudo-source file */
+static int write_pseudo_source(const char *asm_filename) {
+    FILE *fp;
+    int i;
+    uint32_t line_num = 1;
+
+    fp = fopen(asm_filename, MODE_WRITE_TEXT);
+    if (!fp) {
+        mon_out("Error: Cannot open file '%s' for writing.\n", asm_filename);
+        return 0;
+    }
+
+    /* Sort instructions by address */
+    qsort(global_instrs, global_instrs_count, sizeof(instr_entry_t), instr_addr_compare);
+
+    /* Assign line numbers and write pseudo-source */
+    for (i = 0; i < global_instrs_count; i++) {
+        uint16_t addr = global_instrs[i].addr;
+        uint8_t op, p1, p2;
+        unsigned opc_size;
+        const char *disasm;
+
+        /* Assign line number */
+        global_instrs[i].line_num = line_num;
+
+        /* Get opcode bytes */
+        op = mon_get_mem_val(default_memspace, addr);
+        p1 = mon_get_mem_val(default_memspace, (uint16_t)(addr + 1));
+        p2 = mon_get_mem_val(default_memspace, (uint16_t)(addr + 2));
+
+        /* Get disassembly */
+        disasm = mon_disassemble_to_string_ex(default_memspace, addr, op, p1, p2, 0, 1, &opc_size);
+
+        /* Write line: "line  $ADDR: XX XX XX  DISASSEMBLY" */
+        /* Format bytes based on instruction size */
+        if (opc_size == 1) {
+            fprintf(fp, "%6u  $%04X: %02X        %s\n", line_num, addr, op, disasm);
+        } else if (opc_size == 2) {
+            fprintf(fp, "%6u  $%04X: %02X %02X     %s\n", line_num, addr, op, p1, disasm);
+        } else {
+            fprintf(fp, "%6u  $%04X: %02X %02X %02X  %s\n", line_num, addr, op, p1, p2, disasm);
+        }
+
+        line_num++;
+    }
+
+    fclose(fp);
+    return 1;
+}
+
+/* Compare function for sorting instruction addresses */
+static int uint16_compare(const void *a, const void *b) {
+    return (int)(*(const uint16_t *)a) - (int)(*(const uint16_t *)b);
+}
+
+void mon_profile_export(const char *filename)
 {
     FILE *fp;
     callgrind_func_t *f;
     int func_count = 0;
+    char asm_filename[512];
+    const char *asm_basename;
+    int i;
+    profiling_counter_t total_samples = 0;
 
     if (!init_profiling_data()) return;
 
-    fp = fopen(filename, MODE_WRITE_TEXT);
-    if (!fp) {
-        mon_out("Error: Cannot open file '%s' for writing.\n", filename);
+    /* Generate .asm filename */
+    get_asm_filename(filename, asm_filename, sizeof(asm_filename));
+    asm_basename = get_basename(asm_filename);
+
+    /* Initialize global instruction table */
+    global_instrs = NULL;
+    global_instrs_count = 0;
+    global_instrs_capacity = 0;
+
+    /* Collect data from context tree */
+    callgrind_funcs = NULL;
+    collect_callgrind_data(root_context, NULL);
+
+    /* Calculate total samples */
+    for (i = 0; i < global_instrs_count; i++) {
+        total_samples += global_instrs[i].total_samples;
+    }
+
+    /* Write pseudo-source file */
+    if (!write_pseudo_source(asm_filename)) {
+        free_callgrind_data();
         return;
     }
 
-    /* Collect callgrind data from context tree */
-    callgrind_funcs = NULL;
-    collect_callgrind_data(root_context, NULL, detailed);
+    /* Open Callgrind file */
+    fp = fopen(filename, MODE_WRITE_TEXT);
+    if (!fp) {
+        mon_out("Error: Cannot open file '%s' for writing.\n", filename);
+        free_callgrind_data();
+        return;
+    }
 
     /* Write Callgrind header */
     fprintf(fp, "# callgrind format\n");
@@ -1398,47 +1589,55 @@ void mon_profile_export_callgrind(const char *filename, int detailed)
     fprintf(fp, "cmd: vice\n\n");
 
     fprintf(fp, "positions: line\n");
-    fprintf(fp, "events: Cycles\n\n");
+    fprintf(fp, "events: Ir Cy\n\n");
 
     fprintf(fp, "# CPU: 6502 @ %ld Hz\n", machine_get_cycles_per_second());
-    fprintf(fp, "summary: %u\n\n", root_context->total_cycles);
+    fprintf(fp, "# Ir = Instruction executions (samples)\n");
+    fprintf(fp, "# Cy = CPU cycles\n");
+    fprintf(fp, "summary: %u %u\n\n", total_samples, root_context->total_cycles);
 
     /* Write function data */
     for (f = callgrind_funcs; f; f = f->next) {
         callgrind_call_t *c;
         const char *func_name = get_callgrind_func_name(f->addr, f->irq_ctx);
 
-        /* Function definition */
-        fprintf(fp, "fl=memory\n");
+        /* Function definition - reference pseudo-source file */
+        fprintf(fp, "fl=%s\n", asm_basename);
         fprintf(fp, "fn=%s\n", func_name);
 
-        /* In detailed mode, output per-instruction data with disassembly */
-        if (detailed && f->instrs) {
-            callgrind_instr_t *i;
-            for (i = f->instrs; i; i = i->next) {
-                /* Get opcode bytes from memory for disassembly */
-                uint8_t op = mon_get_mem_val(default_memspace, i->addr);
-                uint8_t p1 = mon_get_mem_val(default_memspace, (uint16_t)(i->addr + 1));
-                uint8_t p2 = mon_get_mem_val(default_memspace, (uint16_t)(i->addr + 2));
-                unsigned opc_size;
-                const char *disasm = mon_disassemble_to_string_ex(default_memspace, i->addr,
-                                                                   op, p1, p2, 0, 1, &opc_size);
-                /* Output: # $ADDR: DISASSEMBLY */
-                fprintf(fp, "# $%04X: %s\n", i->addr, disasm);
-                fprintf(fp, "%u %u\n", i->addr, i->cycles);
+        /* Sort instructions by address for consistent output */
+        if (f->instr_count > 0) {
+            qsort(f->instr_addrs, f->instr_count, sizeof(uint16_t), uint16_compare);
+        }
+
+        /* Output per-instruction costs using line numbers */
+        for (i = 0; i < f->instr_count; i++) {
+            instr_entry_t *entry = find_instr_entry(f->instr_addrs[i]);
+            if (entry && entry->line_num > 0) {
+                fprintf(fp, "%u %u %u\n", entry->line_num,
+                        entry->total_samples, entry->total_cycles);
             }
-        } else {
-            /* Self cost at address (line number = address) */
-            fprintf(fp, "%u %u\n", f->addr, f->self_cycles);
         }
 
         /* Calls to other functions */
         for (c = f->calls; c; c = c->next) {
             const char *callee_name = get_callgrind_func_name(c->callee_addr, c->callee_irq_ctx);
-            fprintf(fp, "cfl=memory\n");
+            uint32_t caller_line = get_line_for_addr(c->caller_addr);
+            uint32_t callee_line = get_line_for_addr(c->callee_addr);
+
+            /* If we don't have a line for the call site, use function entry */
+            if (caller_line == 0) {
+                caller_line = get_line_for_addr(f->addr);
+            }
+            if (callee_line == 0) {
+                callee_line = 1;
+            }
+
+            fprintf(fp, "cfl=%s\n", asm_basename);
             fprintf(fp, "cfn=%s\n", callee_name);
-            fprintf(fp, "calls=%u %u\n", c->count, c->callee_addr);
-            fprintf(fp, "%u %u\n", f->addr, c->cycles);
+            fprintf(fp, "calls=%u %u\n", c->count, callee_line);
+            /* Cost attributed to the call site: samples=count, cycles */
+            fprintf(fp, "%u %u %u\n", caller_line > 0 ? caller_line : 1, c->count, c->cycles);
         }
 
         fprintf(fp, "\n");
@@ -1446,13 +1645,14 @@ void mon_profile_export_callgrind(const char *filename, int detailed)
     }
 
     /* Write totals */
-    fprintf(fp, "totals: %u\n", root_context->total_cycles);
+    fprintf(fp, "totals: %u %u\n", total_samples, root_context->total_cycles);
 
-    free_callgrind_data();
     fclose(fp);
 
-    mon_out("Exported %d functions to '%s' (Callgrind format%s)\n",
-            func_count, filename, detailed ? ", detailed" : "");
+    mon_out("Exported %d functions to '%s'\n", func_count, filename);
+    mon_out("Pseudo-source: %s (%d instructions)\n", asm_filename, global_instrs_count);
     mon_out("Open with: kcachegrind %s\n", filename);
+
+    free_callgrind_data();
 }
 
