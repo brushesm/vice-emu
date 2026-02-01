@@ -49,8 +49,15 @@ jobs:
           # Install optional dependencies for full functionality
           brew install lame flac libvorbis giflib libpcap
 
+          # Ensure symlinks are created (needed after cache restore)
+          brew link --overwrite autoconf automake pkg-config || true
+
           # Clean up to reduce cache size
           brew cleanup
+
+          # Verify autoconf is available
+          which autoconf
+          autoconf --version
 
       - name: Generate configure script
         working-directory: vice
