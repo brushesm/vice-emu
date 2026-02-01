@@ -1,0 +1,16 @@
+name: macOS CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show macOS + Xcode versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          
