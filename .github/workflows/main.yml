@@ -95,3 +95,42 @@ jobs:
           echo ""
           echo "=== Testing x64sc binary ==="
           ./src/x64sc --help | head -20 || echo "Binary runs but may need display"
+
+      - name: Determine Homebrew prefix
+        id: homebrew
+        run: |
+          if [ -d "/opt/homebrew" ]; then
+            echo "prefix=/opt/homebrew" >> $GITHUB_OUTPUT
+          else
+            echo "prefix=/usr/local" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build macOS App Bundle and DMG
+        working-directory: build
+        env:
+          DEPS_PREFIX: ${{ steps.homebrew.outputs.prefix }}
+        run: |
+          echo "Using DEPS_PREFIX=$DEPS_PREFIX"
+          make bindistzip
+
+      - name: List distribution artifacts
+        run: |
+          echo "=== Distribution files ==="
+          find . -name "*.dmg" -o -name "VICE-*" -type d 2>/dev/null | head -20
+          ls -la build/*.dmg 2>/dev/null || ls -la *.dmg 2>/dev/null || echo "DMG location may vary"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vice-macos-gtk3-dmg
+          path: |
+            **/*.dmg
+          if-no-files-found: warn
+
+      - name: Upload App Bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vice-macos-gtk3-app
+          path: |
+            **/VICE-*/
+          if-no-files-found: warn
