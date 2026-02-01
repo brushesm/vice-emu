@@ -1249,11 +1249,16 @@ typedef struct callgrind_func_s {
 
 static callgrind_func_t *callgrind_funcs = NULL;
 
-/* Add instruction to global table (for pseudo-source generation) */
+/* Add instruction to global table (for pseudo-source generation)
+ * Note: Uses linear search O(n) during collection. For typical 6502 programs
+ * with hundreds to low thousands of unique instruction addresses, this is
+ * fast enough. A hash table (like monitor.c's HASH_ADDR) could be used if
+ * performance becomes an issue with very large traces.
+ */
 static void add_global_instr(uint16_t addr, profiling_counter_t cycles, profiling_counter_t samples) {
     int i;
 
-    /* Check if already exists */
+    /* Linear search - acceptable for typical program sizes */
     for (i = 0; i < global_instrs_count; i++) {
         if (global_instrs[i].addr == addr) {
             global_instrs[i].total_cycles += cycles;
@@ -1321,9 +1326,12 @@ static callgrind_func_t *find_or_create_callgrind_func(uint16_t addr, const char
     return f;
 }
 
+/* Track which instruction addresses belong to a function.
+ * Linear search is acceptable since each function typically has
+ * only tens to hundreds of unique instruction addresses.
+ */
 static void add_func_instr(callgrind_func_t *func, uint16_t addr) {
     int i;
-    /* Check if already in list */
     for (i = 0; i < func->instr_count; i++) {
         if (func->instr_addrs[i] == addr) return;
     }

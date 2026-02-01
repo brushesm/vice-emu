@@ -301,8 +301,7 @@ void compute_aggregate_stats(profiling_context_t *context) {
 | `prof disass <addr>` | Per-instruction profiling with disassembly |
 | `prof context <ctx>` | Detailed context info with disassembly |
 | `prof clear <addr>` | Clear profiling data for a function |
-| `prof export csv "file.csv"` | Export flat profile to CSV |
-| `prof export callgrind "file.out"` | Export call graph in Callgrind format |
+| `prof export "file.out"` | Export to Callgrind format with pseudo-source |
 
 ### Output Examples
 
@@ -401,46 +400,54 @@ static bool are_aggregates_compatible(profiling_context_t *a,
 
 ## Export Functionality
 
-The profiler supports exporting data to external files for analysis with external tools.
+The profiler supports exporting data to Callgrind format with pseudo-source for analysis
+with external tools like KCachegrind and Blacksmith.
 
-### CSV Export
-
-```
-prof export csv "profile.csv"
-```
-
-Exports a flat profile to CSV format with the following columns:
-- **Address** - Function entry address (hex)
-- **Name** - Function name (from symbol table or address)
-- **Total Cycles** - Including all callees
-- **Total %** - Percentage of total execution time
-- **Self Cycles** - Excluding callees
-- **Self %** - Percentage of self time
-- **Calls** - Number of times function was called
-- **Avg Cycles** - Average cycles per call
-- **Time (us)** - Self time in microseconds
-
-The CSV file can be opened in spreadsheet software (Excel, LibreOffice Calc, etc.) for further analysis.
-
-### Callgrind Export
+### Export Command
 
 ```
-prof export callgrind "profile.callgrind"
+prof export "profile.out"
 ```
 
-Exports the call graph in Callgrind format, compatible with:
-- **KCachegrind** (Linux) - `kcachegrind profile.callgrind`
-- **QCachegrind** (cross-platform) - `qcachegrind profile.callgrind`
+This generates **two files**:
+1. `profile.out` - Callgrind format data file
+2. `profile.asm` - Pseudo-source assembly file
 
-The Callgrind format includes:
-- Function self costs (cycles)
-- Call relationships between functions
-- Call counts
-- Inclusive costs (function + callees)
+### Pseudo-Source File
 
-This allows powerful visualization of the call graph and identification of hot paths.
+The `.asm` file contains one instruction per line with the format:
+```
+  line  $ADDR: XX XX XX  DISASSEMBLY
+```
 
-#### Example Callgrind Workflow
+Example:
+```
+     1  $C000: A9 01     LDA #$01
+     2  $C002: 8D 20 D0  STA $D020
+     3  $C005: 60        RTS
+```
+
+This allows Callgrind viewers to display per-instruction costs with actual disassembly.
+
+### Callgrind File
+
+The Callgrind file uses two metrics:
+- **Ir** - Instruction executions (sample count)
+- **Cy** - CPU cycles
+
+Features:
+- References pseudo-source file via `fl=` directive
+- Uses line numbers that map to instructions in pseudo-source
+- Functions in interrupt context shown as `MainLoop [IRQ]` or `Handler [IRQ>NMI]`
+- Full call graph with caller/callee relationships
+
+### Compatible Viewers
+
+- **KCachegrind** (Linux) - `kcachegrind profile.out`
+- **QCachegrind** (cross-platform) - `qcachegrind profile.out`
+- **Blacksmith** - Advanced Callgrind viewer with source annotation
+
+### Example Workflow
 
 ```bash
 # In VICE monitor
@@ -448,11 +455,16 @@ This allows powerful visualization of the call graph and identification of hot p
 (C:$e000) x
 # ... run your program ...
 (C:$e000) prof off
-(C:$e000) prof export callgrind "myprogram.callgrind"
+(C:$e000) prof export "myprogram.out"
 
 # In terminal
-$ kcachegrind myprogram.callgrind
+$ kcachegrind myprogram.out
 ```
+
+The viewer will show:
+- Function list with cycle counts
+- Per-instruction costs in the pseudo-source view
+- Call graph navigation between functions
 
 ---
 
