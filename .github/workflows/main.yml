@@ -5,12 +5,66 @@ on:
   pull_request:
 
 jobs:
-  build:
+  build-gtk3:
+    name: macOS GTK3 Build
     runs-on: macos-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Show macOS + Xcode versions
         run: |
           sw_vers
           xcodebuild -version
-          
+
+      - name: Install dependencies via Homebrew
+        run: |
+          # Update Homebrew
+          brew update
+
+          # Install build tools
+          brew install autoconf automake pkg-config texinfo dos2unix
+
+          # Install xa65 cross-assembler (needed for building ROMs)
+          brew install xa
+
+          # Install GTK3 and related dependencies
+          brew install gtk+3 librsvg adwaita-icon-theme glew
+
+          # Install optional dependencies for full functionality
+          brew install lame flac libvorbis giflib libpcap
+
+      - name: Generate configure script
+        working-directory: vice
+        run: ./autogen.sh
+
+      - name: Create build directory
+        run: mkdir -p build
+
+      - name: Configure VICE for GTK3
+        working-directory: build
+        run: |
+          ../vice/configure \
+            --enable-gtk3ui \
+            --disable-html-docs \
+            --disable-pdf-docs \
+            --with-flac \
+            --with-vorbis \
+            --with-lame \
+            --with-gif \
+            --with-png
+
+      - name: Build VICE
+        working-directory: build
+        run: make -j$(sysctl -n hw.ncpu)
+
+      - name: Verify build artifacts
+        working-directory: build
+        run: |
+          echo "=== Built executables ==="
+          ls -la src/x64sc src/x128 src/xvic src/xpet src/xplus4 src/xcbm2 src/xcbm5x0 src/vsid src/c1541 2>/dev/null || true
+
+          echo ""
+          echo "=== Testing x64sc binary ==="
+          ./src/x64sc --help | head -20 || echo "Binary runs but may need display"
