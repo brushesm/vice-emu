@@ -271,6 +271,9 @@ depth		{ return DEPTH; }
 disass		{ return DISASS; }
 context	{ return PROFILE_CONTEXT; }
 clear		{ return CLEAR; }
+export		{ return PROFILE_EXPORT; }
+csv		{ return FORMAT_CSV; }
+callgrind	{ return FORMAT_CALLGRIND; }
 
 load { yylval.i = e_load; return MEM_OP; }
 store { yylval.i = e_store; return MEM_OP; }

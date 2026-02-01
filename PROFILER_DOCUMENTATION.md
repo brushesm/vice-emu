@@ -301,6 +301,8 @@ void compute_aggregate_stats(profiling_context_t *context) {
 | `prof disass <addr>` | Per-instruction profiling with disassembly |
 | `prof context <ctx>` | Detailed context info with disassembly |
 | `prof clear <addr>` | Clear profiling data for a function |
+| `prof export csv "file.csv"` | Export flat profile to CSV |
+| `prof export callgrind "file.out"` | Export call graph in Callgrind format |
 
 ### Output Examples
 
@@ -397,13 +399,69 @@ static bool are_aggregates_compatible(profiling_context_t *a,
 
 ---
 
+## Export Functionality
+
+The profiler supports exporting data to external files for analysis with external tools.
+
+### CSV Export
+
+```
+prof export csv "profile.csv"
+```
+
+Exports a flat profile to CSV format with the following columns:
+- **Address** - Function entry address (hex)
+- **Name** - Function name (from symbol table or address)
+- **Total Cycles** - Including all callees
+- **Total %** - Percentage of total execution time
+- **Self Cycles** - Excluding callees
+- **Self %** - Percentage of self time
+- **Calls** - Number of times function was called
+- **Avg Cycles** - Average cycles per call
+- **Time (us)** - Self time in microseconds
+
+The CSV file can be opened in spreadsheet software (Excel, LibreOffice Calc, etc.) for further analysis.
+
+### Callgrind Export
+
+```
+prof export callgrind "profile.callgrind"
+```
+
+Exports the call graph in Callgrind format, compatible with:
+- **KCachegrind** (Linux) - `kcachegrind profile.callgrind`
+- **QCachegrind** (cross-platform) - `qcachegrind profile.callgrind`
+
+The Callgrind format includes:
+- Function self costs (cycles)
+- Call relationships between functions
+- Call counts
+- Inclusive costs (function + callees)
+
+This allows powerful visualization of the call graph and identification of hot paths.
+
+#### Example Callgrind Workflow
+
+```bash
+# In VICE monitor
+(C:$e000) prof on
+(C:$e000) x
+# ... run your program ...
+(C:$e000) prof off
+(C:$e000) prof export callgrind "myprogram.callgrind"
+
+# In terminal
+$ kcachegrind myprogram.callgrind
+```
+
+---
+
 ## Limitations
 
 1. **6502 Only** - No support for other CPU types (Z80, etc.)
 2. **No Thread Safety** - Single-threaded design
 3. **Max Call Stack Depth** - 129 levels before overflow
-4. **No Export** - Results only viewable in monitor, no file export
-5. **No Sampling Mode** - Full instrumentation only (some overhead)
+4. **No Sampling Mode** - Full instrumentation only (some overhead)
 
 ---
 

@@ -38,4 +38,8 @@ void mon_profile_disass(MON_ADDR function);
 void mon_profile_clear(MON_ADDR function);
 void mon_profile_disass_context(int context_id);
 
+/* export functions */
+void mon_profile_export_csv(const char *filename);
+void mon_profile_export_callgrind(const char *filename);
+
 #endif /* VICE_MON_PROFILE_H */

@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "archdep.h"
 #include "lib.h"
 #include "machine.h"
 #include "maincpu.h"
@@ -1137,5 +1138,314 @@ void mon_profile_clear(MON_ADDR function)
     }
 
     clear_recursively(root_context, addr);
+}
+
+/* ============================================================================
+ * EXPORT FUNCTIONS
+ * ============================================================================ */
+
+/* Helper to get function name for export (returns static buffer) */
+static const char *get_function_name(uint16_t addr) {
+    static char buf[32];
+    char *name = mon_symbol_table_lookup_name(default_memspace, addr);
+    if (name) {
+        return name;
+    }
+    if (addr == 0x0000) {
+        return "ROOT";
+    }
+    snprintf(buf, sizeof(buf), "$%04X", addr);
+    return buf;
+}
+
+/* Helper to escape strings for CSV (handles quotes and commas) */
+static void csv_write_string(FILE *fp, const char *str) {
+    bool needs_quotes = false;
+    const char *p;
+
+    /* Check if we need to quote the string */
+    for (p = str; *p; p++) {
+        if (*p == ',' || *p == '"' || *p == '\n' || *p == '\r') {
+            needs_quotes = true;
+            break;
+        }
+    }
+
+    if (needs_quotes) {
+        fputc('"', fp);
+        for (p = str; *p; p++) {
+            if (*p == '"') {
+                fputs("\"\"", fp);  /* Escape quotes by doubling */
+            } else {
+                fputc(*p, fp);
+            }
+        }
+        fputc('"', fp);
+    } else {
+        fputs(str, fp);
+    }
+}
+
+/* Recursively collect all functions into a flat array for export */
+static void collect_functions_for_export(profiling_context_t *context,
+                                         context_array_t *all_functions) {
+    /* Binary search for matching context */
+    int element = binary_search(all_functions, context, pc_dst_compare);
+    bool match_found = false;
+
+    /* Check all matches to see if any is compatible */
+    while (element < all_functions->size) {
+        if (context->pc_dst != all_functions->data[element]->pc_dst) {
+            break;
+        }
+        if (are_aggregates_compatible(context, all_functions->data[element])) {
+            match_found = true;
+            merge_aggregate_contexts(all_functions->data[element], context);
+            break;
+        }
+        element++;
+    }
+
+    if (!match_found) {
+        /* No match, insert and sort */
+        profiling_context_t *new_context = alloc_profiling_context();
+        new_context->pc_dst = context->pc_dst;
+        new_context->memory_bank_config = context->memory_bank_config;
+        merge_aggregate_contexts(new_context, context);
+        array_append(all_functions, new_context);
+        array_sort(all_functions, pc_dst_compare);
+    }
+
+    /* Recursively add children */
+    if (context->child) {
+        profiling_context_t *c = context->child;
+        do {
+            collect_functions_for_export(c, all_functions);
+            c = c->next;
+        } while (c != context->child);
+    }
+}
+
+void mon_profile_export_csv(const char *filename)
+{
+    FILE *fp;
+    int i;
+    context_array_t all_functions;
+    double cycles_per_us;
+
+    if (!init_profiling_data()) return;
+
+    fp = fopen(filename, MODE_WRITE_TEXT);
+    if (!fp) {
+        mon_out("Error: Cannot open file '%s' for writing.\n", filename);
+        return;
+    }
+
+    cycles_per_us = machine_get_cycles_per_second() / 1000000.0;
+
+    /* Initialize array */
+    all_functions.size = 0;
+    all_functions.capacity = 0;
+    all_functions.data = NULL;
+
+    /* Collect all functions */
+    collect_functions_for_export(root_context, &all_functions);
+    mark_aliases(&all_functions);
+
+    /* Sort by self time (descending) */
+    array_sort(&all_functions, self_time);
+
+    /* Write CSV header */
+    fprintf(fp, "Address,Name,Total Cycles,Total %%,Self Cycles,Self %%,Calls,Avg Cycles,Time (us)\n");
+
+    /* Write data rows */
+    for (i = 0; i < all_functions.size; i++) {
+        profiling_context_t *ctx = all_functions.data[i];
+        double total_pct = 100.0 * ctx->total_cycles / root_context->total_cycles;
+        double self_pct = 100.0 * ctx->total_cycles_self / root_context->total_cycles;
+        double time_us = ctx->total_cycles_self / cycles_per_us;
+        uint32_t calls = ctx->num_enters > 0 ? ctx->num_enters : 1;
+        double avg_cycles = (double)ctx->total_cycles / calls;
+
+        fprintf(fp, "$%04X,", ctx->pc_dst);
+        csv_write_string(fp, get_function_name(ctx->pc_dst));
+        fprintf(fp, ",%u,%.2f,%u,%.2f,%u,%.1f,%.2f\n",
+                ctx->total_cycles,
+                total_pct,
+                ctx->total_cycles_self,
+                self_pct,
+                calls,
+                avg_cycles,
+                time_us);
+
+        free_profiling_context(all_functions.data[i]);
+    }
+
+    array_free(&all_functions);
+    fclose(fp);
+
+    mon_out("Exported %d functions to '%s'\n", i, filename);
+}
+
+/* Helper structure for callgrind export */
+typedef struct callgrind_call_s {
+    uint16_t callee_addr;
+    profiling_counter_t cycles;
+    profiling_counter_t count;
+    struct callgrind_call_s *next;
+} callgrind_call_t;
+
+typedef struct callgrind_func_s {
+    uint16_t addr;
+    profiling_counter_t self_cycles;
+    profiling_counter_t total_cycles;
+    profiling_counter_t num_calls;
+    callgrind_call_t *calls;
+    struct callgrind_func_s *next;
+} callgrind_func_t;
+
+static callgrind_func_t *callgrind_funcs = NULL;
+
+static callgrind_func_t *find_or_create_callgrind_func(uint16_t addr) {
+    callgrind_func_t *f = callgrind_funcs;
+    while (f) {
+        if (f->addr == addr) return f;
+        f = f->next;
+    }
+    /* Create new */
+    f = lib_calloc(1, sizeof(callgrind_func_t));
+    f->addr = addr;
+    f->next = callgrind_funcs;
+    callgrind_funcs = f;
+    return f;
+}
+
+static void add_callgrind_call(callgrind_func_t *caller, uint16_t callee_addr,
+                               profiling_counter_t cycles, profiling_counter_t count) {
+    callgrind_call_t *c = caller->calls;
+    while (c) {
+        if (c->callee_addr == callee_addr) {
+            c->cycles += cycles;
+            c->count += count;
+            return;
+        }
+        c = c->next;
+    }
+    /* Create new call entry */
+    c = lib_calloc(1, sizeof(callgrind_call_t));
+    c->callee_addr = callee_addr;
+    c->cycles = cycles;
+    c->count = count;
+    c->next = caller->calls;
+    caller->calls = c;
+}
+
+static void collect_callgrind_data(profiling_context_t *context, uint16_t parent_addr) {
+    callgrind_func_t *func;
+    uint16_t func_addr = context->pc_dst;
+
+    /* Get or create function entry */
+    func = find_or_create_callgrind_func(func_addr);
+    func->self_cycles += context->total_cycles_self;
+    func->total_cycles += context->total_cycles;
+    func->num_calls += context->num_enters > 0 ? context->num_enters : 1;
+
+    /* Add call from parent (if not root) */
+    if (parent_addr != 0 || context->pc_src >= 0xfffa) {
+        callgrind_func_t *parent = find_or_create_callgrind_func(parent_addr);
+        add_callgrind_call(parent, func_addr, context->total_cycles,
+                          context->num_enters > 0 ? context->num_enters : 1);
+    }
+
+    /* Process children */
+    if (context->child) {
+        profiling_context_t *c = context->child;
+        do {
+            collect_callgrind_data(c, func_addr);
+            c = c->next;
+        } while (c != context->child);
+    }
+}
+
+static void free_callgrind_data(void) {
+    callgrind_func_t *f = callgrind_funcs;
+    while (f) {
+        callgrind_func_t *next_f = f->next;
+        callgrind_call_t *c = f->calls;
+        while (c) {
+            callgrind_call_t *next_c = c->next;
+            lib_free(c);
+            c = next_c;
+        }
+        lib_free(f);
+        f = next_f;
+    }
+    callgrind_funcs = NULL;
+}
+
+void mon_profile_export_callgrind(const char *filename)
+{
+    FILE *fp;
+    callgrind_func_t *f;
+    int func_count = 0;
+
+    if (!init_profiling_data()) return;
+
+    fp = fopen(filename, MODE_WRITE_TEXT);
+    if (!fp) {
+        mon_out("Error: Cannot open file '%s' for writing.\n", filename);
+        return;
+    }
+
+    /* Collect callgrind data from context tree */
+    callgrind_funcs = NULL;
+    collect_callgrind_data(root_context, 0);
+
+    /* Write Callgrind header */
+    fprintf(fp, "# callgrind format\n");
+    fprintf(fp, "version: 1\n");
+    fprintf(fp, "creator: VICE Profiler\n");
+    fprintf(fp, "pid: 1\n");
+    fprintf(fp, "cmd: vice\n\n");
+
+    fprintf(fp, "positions: line\n");
+    fprintf(fp, "events: Cycles\n\n");
+
+    fprintf(fp, "# CPU: 6502 @ %ld Hz\n", machine_get_cycles_per_second());
+    fprintf(fp, "summary: %u\n\n", root_context->total_cycles);
+
+    /* Write function data */
+    for (f = callgrind_funcs; f; f = f->next) {
+        callgrind_call_t *c;
+        const char *func_name = get_function_name(f->addr);
+
+        /* Function definition */
+        fprintf(fp, "fl=memory\n");
+        fprintf(fp, "fn=%s\n", func_name);
+
+        /* Self cost at address (line number = address) */
+        fprintf(fp, "%u %u\n", f->addr, f->self_cycles);
+
+        /* Calls to other functions */
+        for (c = f->calls; c; c = c->next) {
+            const char *callee_name = get_function_name(c->callee_addr);
+            fprintf(fp, "cfl=memory\n");
+            fprintf(fp, "cfn=%s\n", callee_name);
+            fprintf(fp, "calls=%u %u\n", c->count, c->callee_addr);
+            fprintf(fp, "%u %u\n", f->addr, c->cycles);
+        }
+
+        fprintf(fp, "\n");
+        func_count++;
+    }
+
+    /* Write totals */
+    fprintf(fp, "totals: %u\n", root_context->total_cycles);
+
+    free_callgrind_data();
+    fclose(fp);
+
+    mon_out("Exported %d functions to '%s' (Callgrind format)\n", func_count, filename);
+    mon_out("Open with: kcachegrind %s\n", filename);
 }
 
