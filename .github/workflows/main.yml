@@ -18,20 +18,6 @@ jobs:
           sw_vers
           xcodebuild -version
 
-      - name: Cache Homebrew packages
-        uses: actions/cache@v4
-        id: cache-homebrew
-        with:
-          path: |
-            ~/Library/Caches/Homebrew
-            /usr/local/Cellar
-            /usr/local/opt
-            /opt/homebrew/Cellar
-            /opt/homebrew/opt
-          key: ${{ runner.os }}-homebrew-gtk3-${{ hashFiles('.github/workflows/main.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-homebrew-gtk3-
-
       - name: Install dependencies via Homebrew
         run: |
           # Update Homebrew
@@ -48,17 +34,6 @@ jobs:
 
           # Install optional dependencies for full functionality
           brew install lame flac libvorbis giflib libpcap
-
-          # Ensure symlinks are created (needed after cache restore)
-          brew link --overwrite autoconf automake pkg-config dos2unix texinfo xa || true
-
-          # Clean up to reduce cache size
-          brew cleanup
-
-          # Verify tools are available
-          echo "Checking build tools..."
-          which autoconf automake pkg-config dos2unix
-          autoconf --version | head -1
 
       - name: Generate configure script
         working-directory: vice
