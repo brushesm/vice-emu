@@ -1399,34 +1399,39 @@ static void collect_callgrind_data(profiling_context_t *context,
     uint16_t func_addr = context->pc_dst;
     const char *irq_ctx = get_interrupt_context(context);
     int page_idx, addr_idx;
+    profiling_context_t *mem_ctx;
 
     /* Get or create function entry */
     func = find_or_create_callgrind_func(func_addr, irq_ctx);
     func->total_cycles += context->total_cycles;
     func->num_calls += context->num_enters > 0 ? context->num_enters : 1;
 
-    /* Collect per-instruction data */
-    for (page_idx = 0; page_idx < 256; page_idx++) {
-        profiling_page_t *page = context->page[page_idx];
-        if (page) {
-            for (addr_idx = 0; addr_idx < 256; addr_idx++) {
-                if (page->data[addr_idx].touched) {
-                    uint16_t instr_addr = (page_idx << 8) | addr_idx;
-                    profiling_counter_t cycles = page->data[addr_idx].num_cycles;
-                    profiling_counter_t samples = page->data[addr_idx].num_samples;
+    /* Collect per-instruction data from all memory config siblings */
+    mem_ctx = context;
+    while (mem_ctx) {
+        for (page_idx = 0; page_idx < 256; page_idx++) {
+            profiling_page_t *page = mem_ctx->page[page_idx];
+            if (page) {
+                for (addr_idx = 0; addr_idx < 256; addr_idx++) {
+                    if (page->data[addr_idx].touched) {
+                        uint16_t instr_addr = (page_idx << 8) | addr_idx;
+                        profiling_counter_t cycles = page->data[addr_idx].num_cycles;
+                        profiling_counter_t samples = page->data[addr_idx].num_samples;
 
-                    /* Add to global instruction table */
-                    add_global_instr(instr_addr, cycles, samples);
+                        /* Add to global instruction table */
+                        add_global_instr(instr_addr, cycles, samples);
 
-                    /* Track which instructions belong to this function */
-                    add_func_instr(func, instr_addr);
+                        /* Track which instructions belong to this function */
+                        add_func_instr(func, instr_addr);
 
-                    /* Accumulate self costs */
-                    func->self_cycles += cycles;
-                    func->self_samples += samples;
+                        /* Accumulate self costs */
+                        func->self_cycles += cycles;
+                        func->self_samples += samples;
+                    }
                 }
             }
         }
+        mem_ctx = mem_ctx->next_mem_config;
     }
 
     /* Add call from parent (if not root) */
@@ -1439,13 +1444,17 @@ static void collect_callgrind_data(profiling_context_t *context,
                           context->num_enters > 0 ? context->num_enters : 1);
     }
 
-    /* Process children */
-    if (context->child) {
-        profiling_context_t *c = context->child;
-        do {
-            collect_callgrind_data(c, context);
-            c = c->next;
-        } while (c != context->child);
+    /* Process children from all memory config siblings */
+    mem_ctx = context;
+    while (mem_ctx) {
+        if (mem_ctx->child) {
+            profiling_context_t *c = mem_ctx->child;
+            do {
+                collect_callgrind_data(c, context);
+                c = c->next;
+            } while (c != mem_ctx->child);
+        }
+        mem_ctx = mem_ctx->next_mem_config;
     }
 }
 
