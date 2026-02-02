@@ -626,7 +626,7 @@ static void print_dst(uint16_t dst, int max_width, int memory_config) {
         strcat(full_name, name); /* since name was not changed, this will always copy max l bytes */
         strcat(full_name, suffix);
         name = full_name;
-        l += 1 + strlen(suffix);
+        l += strlen(suffix);
     }
 
     if (l > max_width) {
@@ -1361,7 +1361,10 @@ static void add_callgrind_call(callgrind_func_t *caller, uint16_t caller_site_ad
                                profiling_counter_t cycles, profiling_counter_t count) {
     callgrind_call_t *c = caller->calls;
     while (c) {
-        if (c->callee_addr == callee_addr && strcmp(c->callee_irq_ctx, callee_irq_ctx) == 0) {
+        /* Include caller_site_addr in match to preserve distinct call sites */
+        if (c->caller_addr == caller_site_addr &&
+            c->callee_addr == callee_addr &&
+            strcmp(c->callee_irq_ctx, callee_irq_ctx) == 0) {
             c->cycles += cycles;
             c->count += count;
             return;
