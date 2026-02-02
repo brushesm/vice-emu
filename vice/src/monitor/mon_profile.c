@@ -1645,10 +1645,18 @@ void mon_profile_export(const char *filename)
         /* Calls to other functions */
         for (c = f->calls; c; c = c->next) {
             const char *callee_name = get_callgrind_func_name(c->callee_addr, c->callee_irq_ctx);
-            uint32_t caller_line = get_line_for_addr(c->caller_addr);
+            uint32_t caller_line;
             uint32_t callee_line = get_line_for_addr(c->callee_addr);
 
-            /* If we don't have a line for the call site, use function entry */
+            /* caller_addr is the return address (JSR addr + 2), except for
+             * interrupts (0xFFFA/0xFFFC/0xFFFE) and BOOT (0x0000) */
+            if (c->caller_addr == 0 || is_interrupt(c->caller_addr)) {
+                caller_line = get_line_for_addr(f->addr);  /* Use function entry */
+            } else {
+                caller_line = get_line_for_addr(c->caller_addr - 2);  /* JSR start */
+            }
+
+            /* If we still don't have a line, use function entry */
             if (caller_line == 0) {
                 caller_line = get_line_for_addr(f->addr);
             }
