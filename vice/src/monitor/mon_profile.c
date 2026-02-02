@@ -1414,7 +1414,7 @@ static void collect_callgrind_data(profiling_context_t *context,
             profiling_page_t *page = mem_ctx->page[page_idx];
             if (page) {
                 for (addr_idx = 0; addr_idx < 256; addr_idx++) {
-                    if (page->data[addr_idx].touched) {
+                    if (page->data[addr_idx].num_cycles > 0 || page->data[addr_idx].touched) {
                         uint16_t instr_addr = (page_idx << 8) | addr_idx;
                         profiling_counter_t cycles = page->data[addr_idx].num_cycles;
                         profiling_counter_t samples = page->data[addr_idx].num_samples;
