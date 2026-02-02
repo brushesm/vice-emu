@@ -132,12 +132,14 @@ void free_profiling_context(profiling_context_t *data) {
     int i;
     if (!data) { return; }
     if (data->child) {
-        profiling_context_t *c = data->child;
+        /* Save sentinel before freeing - the cyclic list uses data->child as sentinel */
+        profiling_context_t *sentinel = data->child;
+        profiling_context_t *c = sentinel;
         do {
             profiling_context_t *next = c->next;
             free_profiling_context(c);
             c = next;
-        } while(c != data->child);
+        } while(c != sentinel);
     }
 
     for (i = 0; i < 256; i++) {

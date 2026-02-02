@@ -220,24 +220,32 @@ static uint16_t parent_function(profiling_context_t *context) {
     }
 }
 
-/* acending based on pc_dst */
+/* ascending based on pc_dst */
 static int pc_dst_compare(void const* a, void const* b) {
-    return (int)(*((profiling_context_t**)a))->pc_dst - (int)(*((profiling_context_t**)b))->pc_dst;
+    uint16_t va = (*((profiling_context_t**)a))->pc_dst;
+    uint16_t vb = (*((profiling_context_t**)b))->pc_dst;
+    return (va > vb) - (va < vb);
 }
 
-/* acending based on pc_dst */
+/* ascending based on parent pc_dst */
 static int sort_by_parent_function(void const* a, void const* b) {
-    return (int)parent_function(*((profiling_context_t**)a)) - (int)parent_function(*((profiling_context_t**)b));
+    uint16_t va = parent_function(*((profiling_context_t**)a));
+    uint16_t vb = parent_function(*((profiling_context_t**)b));
+    return (va > vb) - (va < vb);
 }
 
 /* descending based on total_cycles_self */
 static int self_time(void const* a, void const* b) {
-    return (int)(*((profiling_context_t**)b))->total_cycles_self - (int)(*((profiling_context_t**)a))->total_cycles_self;
+    profiling_counter_t va = (*((profiling_context_t**)a))->total_cycles_self;
+    profiling_counter_t vb = (*((profiling_context_t**)b))->total_cycles_self;
+    return (va < vb) - (va > vb);  /* reversed for descending */
 }
 
 /* descending based on total_cycles */
 static int total_time(void const* a, void const* b) {
-    return (int)(*((profiling_context_t**)b))->total_cycles - (int)(*((profiling_context_t**)a))->total_cycles;
+    profiling_counter_t va = (*((profiling_context_t**)a))->total_cycles;
+    profiling_counter_t vb = (*((profiling_context_t**)b))->total_cycles;
+    return (va < vb) - (va > vb);  /* reversed for descending */
 }
 
 
@@ -870,12 +878,14 @@ static void print_disass_context(profiling_context_t *context, bool print_contex
     print_cycle_time(context->total_cycles_self, 10);
     mon_out("\n");
 
-    mon_out("   Average        %'10.0f cycles ", context->total_cycles/average_times);
-    print_cycle_time(context->total_cycles/average_times, 10);
-    if (context->num_enters != context->num_exits) {
-        mon_out("*");
+    if (average_times > 0) {
+        mon_out("   Average        %'10.0f cycles ", context->total_cycles/average_times);
+        print_cycle_time(context->total_cycles/average_times, 10);
+        if (context->num_enters != context->num_exits) {
+            mon_out("*");
+        }
+        mon_out("\n");
     }
-    mon_out("\n");
 
     mon_out("   Stolen total   %'10u cycles ", context->total_stolen_cycles);
     print_cycle_time(context->total_stolen_cycles, 10);
@@ -888,12 +898,14 @@ static void print_disass_context(profiling_context_t *context, bool print_contex
         print_cycle_time(context->total_stolen_cycles_self, 10);
         mon_out("\n");
 
-        mon_out("   Avg inc stolen %'10.0f cycles ", total_with_stolen/average_times);
-        print_cycle_time(total_with_stolen/average_times, 10);
-        if (context->num_enters != context->num_exits) {
-            mon_out("*");
+        if (average_times > 0) {
+            mon_out("   Avg inc stolen %'10.0f cycles ", total_with_stolen/average_times);
+            print_cycle_time(total_with_stolen/average_times, 10);
+            if (context->num_enters != context->num_exits) {
+                mon_out("*");
+            }
+            mon_out("\n");
         }
-        mon_out("\n");
     }
 
     if (context->num_enters != context->num_exits) {
@@ -1165,6 +1177,7 @@ static const char *get_function_name(uint16_t addr) {
 static const char *get_interrupt_context(profiling_context_t *context) {
     static char buf[64];
     char *p = buf;
+    char *buf_end = buf + sizeof(buf) - 2;  /* Reserve space for ']' and '\0' */
     const char *separators[8];  /* Max 8 nested interrupts */
     int count = 0;
     profiling_context_t *ctx;
@@ -1190,8 +1203,8 @@ static const char *get_interrupt_context(profiling_context_t *context) {
     *p++ = '[';
     while (count > 0) {
         const char *s = separators[--count];
-        while (*s) *p++ = *s++;
-        if (count > 0) *p++ = '>';
+        while (*s && p < buf_end) *p++ = *s++;
+        if (count > 0 && p < buf_end) *p++ = '>';
     }
     *p++ = ']';
     *p = '\0';
