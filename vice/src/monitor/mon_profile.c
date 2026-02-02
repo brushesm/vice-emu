@@ -1165,7 +1165,7 @@ static const char *get_function_name(uint16_t addr) {
         return name;
     }
     if (addr == 0x0000) {
-        return "ROOT";
+        return "MAIN";  /* Root context = main execution (non-interrupt) */
     }
     snprintf(buf, sizeof(buf), "$%04X", addr);
     return buf;
