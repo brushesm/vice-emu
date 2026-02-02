@@ -302,8 +302,17 @@ void profile_start(void)
 {
     if (root_context) free_profiling_context(root_context);
     root_context    = alloc_profiling_context();
-    num_context_ids = 0;
     current_context = root_context;
+
+    /* Reset callstack to avoid stale data from previous session */
+    callstack_size = 0;
+
+    /* Reset context ID mapping */
+    lib_free(id_to_context);
+    id_to_context = NULL;
+    num_context_ids = 0;
+    context_id_capacity = 0;
+
     maincpu_profiling = true;
     entered_context = false;
     exited_context  = false;

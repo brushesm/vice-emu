@@ -81,8 +81,9 @@ void mon_profile_action(ACTION action)
         return;
     }
     case e_ON: {
+        bool was_profiling = maincpu_profiling || root_context != NULL;
         profile_start();
-        if (maincpu_profiling) {
+        if (was_profiling) {
             mon_out("Profiling restarted.\n");
         } else {
             mon_out("Profiling started.\n");
@@ -667,8 +668,10 @@ static void print_context_name(profiling_context_t *context, int indent, int max
 }
 
 static void print_function_line(profiling_context_t *context, int indent, profiling_counter_t total_cycles) {
-    mon_out("%'13u %5.1f%% ", context->total_cycles,      100.0 * context->total_cycles / total_cycles);
-    mon_out("%'13u %5.1f%% ", context->total_cycles_self, 100.0 * context->total_cycles_self / total_cycles);
+    double pct_total = total_cycles > 0 ? 100.0 * context->total_cycles / total_cycles : 0.0;
+    double pct_self  = total_cycles > 0 ? 100.0 * context->total_cycles_self / total_cycles : 0.0;
+    mon_out("%'13u %5.1f%% ", context->total_cycles, pct_total);
+    mon_out("%'13u %5.1f%% ", context->total_cycles_self, pct_self);
     mon_out("%*s", indent, "");
     print_dst(context->pc_dst, 40, context_memory_config(context));
 
@@ -676,10 +679,12 @@ static void print_function_line(profiling_context_t *context, int indent, profil
 }
 
 static void print_context_line(profiling_context_t *context, int indent, int max_indent, profiling_counter_t total_cycles) {
+    double pct_total = total_cycles > 0 ? 100.0 * context->total_cycles / total_cycles : 0.0;
+    double pct_self  = total_cycles > 0 ? 100.0 * context->total_cycles_self / total_cycles : 0.0;
     print_context_name(context, indent, max_indent);
 
-    mon_out("%'13u %5.1f%% ",  context->total_cycles,      100.0 * context->total_cycles / total_cycles);
-    mon_out("%'13u %5.1f%%\n", context->total_cycles_self, 100.0 * context->total_cycles_self / total_cycles);
+    mon_out("%'13u %5.1f%% ",  context->total_cycles, pct_total);
+    mon_out("%'13u %5.1f%%\n", context->total_cycles_self, pct_self);
 }
 
 static void print_context_graph(profiling_context_t *context, int depth, int max_depth, profiling_counter_t total_cycles)
@@ -999,15 +1004,19 @@ static void print_disass_context(profiling_context_t *context, bool print_contex
 
                         mon_out("%'13u %5.1f%% %'13u",
                                 total_cycles,
-                                100.0 * total_cycles / context->total_cycles,
+                                context->total_cycles > 0 ? 100.0 * total_cycles / context->total_cycles : 0.0,
                                 page->data[j].num_samples);
 
                         /* Output instruction cycle timings without decimal
                          * point only when average is exactly an integer */
-                        if (page->data[j].num_cycles % page->data[j].num_samples != 0) {
-                            mon_out(" %3.1f", (double)page->data[j].num_cycles / page->data[j].num_samples);
+                        if (page->data[j].num_samples > 0) {
+                            if (page->data[j].num_cycles % page->data[j].num_samples != 0) {
+                                mon_out(" %3.1f", (double)page->data[j].num_cycles / page->data[j].num_samples);
+                            } else {
+                                mon_out(" %-3u", page->data[j].num_cycles / page->data[j].num_samples);
+                            }
                         } else {
-                            mon_out(" %-3u", page->data[j].num_cycles / page->data[j].num_samples);
+                            mon_out("   -");
                         }
 
                         if (print_contexts && subcontext) {
