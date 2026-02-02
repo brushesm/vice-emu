@@ -406,16 +406,16 @@ with external tools like KCachegrind and Blacksmith.
 ### Export Command
 
 ```
-prof export "profile.out"
+prof export "profile"
 ```
 
 This generates **two files**:
-1. `profile.out` - Callgrind format data file
-2. `profile.asm` - Pseudo-source assembly file
+1. `profile.call` - Callgrind format data file
+2. `profile.src` - Pseudo-source assembly file
 
 ### Pseudo-Source File
 
-The `.asm` file contains one instruction per line with the format:
+The `.src` file contains one instruction per line with the format:
 ```
   line  $ADDR: XX XX XX  DISASSEMBLY
 ```
@@ -443,8 +443,8 @@ Features:
 
 ### Compatible Viewers
 
-- **KCachegrind** (Linux) - `kcachegrind profile.out`
-- **QCachegrind** (cross-platform) - `qcachegrind profile.out`
+- **KCachegrind** (Linux) - `kcachegrind profile.call`
+- **QCachegrind** (cross-platform) - `qcachegrind profile.call`
 - **Blacksmith** - Advanced Callgrind viewer with source annotation
 
 ### Example Workflow
@@ -455,10 +455,10 @@ Features:
 (C:$e000) x
 # ... run your program ...
 (C:$e000) prof off
-(C:$e000) prof export "myprogram.out"
+(C:$e000) prof export "myprogram"
 
-# In terminal
-$ kcachegrind myprogram.out
+# In terminal (opens myprogram.call, which references myprogram.src)
+$ kcachegrind myprogram.call
 ```
 
 The viewer will show:

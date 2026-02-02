@@ -1462,24 +1462,25 @@ static const char *get_callgrind_func_name(uint16_t addr, const char *irq_ctx) {
     return name;
 }
 
-/* Generate pseudo-source filename from callgrind filename */
-static void get_asm_filename(const char *callgrind_file, char *asm_file, size_t asm_file_size) {
-    const char *dot;
-    size_t base_len;
+/* Generate export filenames by appending extensions to base name.
+ * Input: "profile" or "profile.out"
+ * Output: call_file = "profile.call", src_file = "profile.src"
+ */
+static void get_export_filenames(const char *base, char *call_file, char *src_file, size_t buf_size) {
+    size_t len = strlen(base);
 
-    dot = strrchr(callgrind_file, '.');
-    if (dot) {
-        base_len = dot - callgrind_file;
-        if (base_len >= asm_file_size - 5) {
-            base_len = asm_file_size - 5;
-        }
-        strncpy(asm_file, callgrind_file, base_len);
-        asm_file[base_len] = '\0';
-    } else {
-        strncpy(asm_file, callgrind_file, asm_file_size - 5);
-        asm_file[asm_file_size - 5] = '\0';
+    /* Copy base name and add .call extension */
+    if (len >= buf_size - 6) {
+        len = buf_size - 6;
     }
-    strcat(asm_file, ".asm");
+    strncpy(call_file, base, len);
+    call_file[len] = '\0';
+    strcat(call_file, ".call");
+
+    /* Copy base name and add .src extension */
+    strncpy(src_file, base, len);
+    src_file[len] = '\0';
+    strcat(src_file, ".src");
 }
 
 /* Get just the basename of a path */
@@ -1550,16 +1551,17 @@ void mon_profile_export(const char *filename)
     FILE *fp;
     callgrind_func_t *f;
     int func_count = 0;
-    char asm_filename[512];
-    const char *asm_basename;
+    char call_filename[512];
+    char src_filename[512];
+    const char *src_basename;
     int i;
     profiling_counter_t total_samples = 0;
 
     if (!init_profiling_data()) return;
 
-    /* Generate .asm filename */
-    get_asm_filename(filename, asm_filename, sizeof(asm_filename));
-    asm_basename = get_basename(asm_filename);
+    /* Generate .call and .src filenames */
+    get_export_filenames(filename, call_filename, src_filename, sizeof(call_filename));
+    src_basename = get_basename(src_filename);
 
     /* Initialize global instruction table */
     global_instrs = NULL;
@@ -1576,15 +1578,15 @@ void mon_profile_export(const char *filename)
     }
 
     /* Write pseudo-source file */
-    if (!write_pseudo_source(asm_filename)) {
+    if (!write_pseudo_source(src_filename)) {
         free_callgrind_data();
         return;
     }
 
     /* Open Callgrind file */
-    fp = fopen(filename, MODE_WRITE_TEXT);
+    fp = fopen(call_filename, MODE_WRITE_TEXT);
     if (!fp) {
-        mon_out("Error: Cannot open file '%s' for writing.\n", filename);
+        mon_out("Error: Cannot open file '%s' for writing.\n", call_filename);
         free_callgrind_data();
         return;
     }
@@ -1610,7 +1612,7 @@ void mon_profile_export(const char *filename)
         const char *func_name = get_callgrind_func_name(f->addr, f->irq_ctx);
 
         /* Function definition - reference pseudo-source file */
-        fprintf(fp, "fl=%s\n", asm_basename);
+        fprintf(fp, "fl=%s\n", src_basename);
         fprintf(fp, "fn=%s\n", func_name);
 
         /* Sort instructions by address for consistent output */
@@ -1641,7 +1643,7 @@ void mon_profile_export(const char *filename)
                 callee_line = 1;
             }
 
-            fprintf(fp, "cfl=%s\n", asm_basename);
+            fprintf(fp, "cfl=%s\n", src_basename);
             fprintf(fp, "cfn=%s\n", callee_name);
             fprintf(fp, "calls=%u %u\n", c->count, callee_line);
             /* Cost attributed to the call site: samples=count, cycles */
@@ -1657,9 +1659,8 @@ void mon_profile_export(const char *filename)
 
     fclose(fp);
 
-    mon_out("Exported %d functions to '%s'\n", func_count, filename);
-    mon_out("Pseudo-source: %s (%d instructions)\n", asm_filename, global_instrs_count);
-    mon_out("Open with: kcachegrind %s\n", filename);
+    mon_out("Exported %d functions to '%s'\n", func_count, call_filename);
+    mon_out("Pseudo-source: %s (%d instructions)\n", src_filename, global_instrs_count);
 
     free_callgrind_data();
 }

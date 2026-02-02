@@ -21576,13 +21576,14 @@ a function a call graph context.
 @item profile clear <function>
 Clears all profiling stats for a function.
 
-@item profile export "<filename>"
-Export profiling data in Callgrind format. This generates two files: the
-specified file in Callgrind format, and a companion @file{.asm} file containing
-pseudo-source with one disassembled instruction per line. The Callgrind file
-references the pseudo-source, allowing viewers like KCachegrind or QCachegrind
-to display per-instruction cycle costs alongside the disassembly. Functions
-executed in interrupt context are annotated with @code{[IRQ]} or @code{[NMI]}.
+@item profile export "<basename>"
+Export profiling data in Callgrind format. This generates two files:
+@file{<basename>.call} containing Callgrind data, and @file{<basename>.src}
+containing pseudo-source with one disassembled instruction per line. The
+Callgrind file references the pseudo-source, allowing viewers like KCachegrind
+or QCachegrind to display per-instruction cycle costs alongside the disassembly.
+Functions executed in interrupt context are annotated with @code{[IRQ]} or
+@code{[NMI]}.
 
 @end table
 
