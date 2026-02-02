@@ -1255,6 +1255,13 @@ typedef struct callgrind_call_s {
     struct callgrind_call_s *next;
 } callgrind_call_t;
 
+/* Per-instruction cost entry for a function */
+typedef struct func_instr_s {
+    uint16_t addr;
+    profiling_counter_t cycles;
+    profiling_counter_t samples;
+} func_instr_t;
+
 /* Helper structure for callgrind export - function data */
 typedef struct callgrind_func_s {
     uint16_t addr;
@@ -1263,7 +1270,7 @@ typedef struct callgrind_func_s {
     profiling_counter_t self_samples;
     profiling_counter_t total_cycles;
     profiling_counter_t num_calls;
-    uint16_t *instr_addrs;  /* Array of instruction addresses in this function */
+    func_instr_t *instrs;   /* Array of per-instruction costs for THIS function */
     int instr_count;
     int instr_capacity;
     callgrind_call_t *calls;
@@ -1349,21 +1356,31 @@ static callgrind_func_t *find_or_create_callgrind_func(uint16_t addr, const char
     return f;
 }
 
-/* Track which instruction addresses belong to a function.
+/* Track per-instruction costs for a function.
+ * Accumulates cycles/samples if instruction already exists.
  * Linear search is acceptable since each function typically has
  * only tens to hundreds of unique instruction addresses.
  */
-static void add_func_instr(callgrind_func_t *func, uint16_t addr) {
+static void add_func_instr(callgrind_func_t *func, uint16_t addr,
+                           profiling_counter_t cycles, profiling_counter_t samples) {
     int i;
     for (i = 0; i < func->instr_count; i++) {
-        if (func->instr_addrs[i] == addr) return;
+        if (func->instrs[i].addr == addr) {
+            func->instrs[i].cycles += cycles;
+            func->instrs[i].samples += samples;
+            return;
+        }
     }
     /* Grow array if needed */
     if (func->instr_count >= func->instr_capacity) {
         func->instr_capacity = func->instr_capacity ? func->instr_capacity * 2 : 64;
-        func->instr_addrs = lib_realloc(func->instr_addrs, func->instr_capacity * sizeof(uint16_t));
+        func->instrs = lib_realloc(func->instrs, func->instr_capacity * sizeof(func_instr_t));
     }
-    func->instr_addrs[func->instr_count++] = addr;
+    /* Add new entry */
+    func->instrs[func->instr_count].addr = addr;
+    func->instrs[func->instr_count].cycles = cycles;
+    func->instrs[func->instr_count].samples = samples;
+    func->instr_count++;
 }
 
 static void add_callgrind_call(callgrind_func_t *caller, uint16_t caller_site_addr,
@@ -1419,11 +1436,11 @@ static void collect_callgrind_data(profiling_context_t *context,
                         profiling_counter_t cycles = page->data[addr_idx].num_cycles;
                         profiling_counter_t samples = page->data[addr_idx].num_samples;
 
-                        /* Add to global instruction table */
+                        /* Add to global instruction table (for pseudo-source) */
                         add_global_instr(instr_addr, cycles, samples);
 
-                        /* Track which instructions belong to this function */
-                        add_func_instr(func, instr_addr);
+                        /* Track per-instruction costs for THIS function */
+                        add_func_instr(func, instr_addr, cycles, samples);
 
                         /* Accumulate self costs */
                         func->self_cycles += cycles;
@@ -1469,8 +1486,8 @@ static void free_callgrind_data(void) {
             lib_free(c);
             c = next_c;
         }
-        if (f->instr_addrs) {
-            lib_free(f->instr_addrs);
+        if (f->instrs) {
+            lib_free(f->instrs);
         }
         lib_free(f);
         f = next_f;
@@ -1593,9 +1610,11 @@ static int write_pseudo_source(const char *asm_filename, profiling_counter_t tot
     return 1;
 }
 
-/* Compare function for sorting instruction addresses */
-static int uint16_compare(const void *a, const void *b) {
-    return (int)(*(const uint16_t *)a) - (int)(*(const uint16_t *)b);
+/* Compare function for sorting func_instr_t by address */
+static int func_instr_compare(const void *a, const void *b) {
+    const func_instr_t *ia = (const func_instr_t *)a;
+    const func_instr_t *ib = (const func_instr_t *)b;
+    return (int)ia->addr - (int)ib->addr;
 }
 
 void mon_profile_export(const char *filename)
@@ -1671,15 +1690,16 @@ void mon_profile_export(const char *filename)
 
         /* Sort instructions by address for consistent output */
         if (f->instr_count > 0) {
-            qsort(f->instr_addrs, f->instr_count, sizeof(uint16_t), uint16_compare);
+            qsort(f->instrs, f->instr_count, sizeof(func_instr_t), func_instr_compare);
         }
 
-        /* Output per-instruction costs using line numbers */
+        /* Output per-instruction costs using line numbers.
+         * Use function-specific cycles (not global) for correct per-context costs. */
         for (i = 0; i < f->instr_count; i++) {
-            instr_entry_t *entry = find_instr_entry(f->instr_addrs[i]);
-            if (entry && entry->line_num > 0) {
-                fprintf(fp, "%u %u %u\n", entry->line_num,
-                        entry->total_samples, entry->total_cycles);
+            uint32_t line_num = get_line_for_addr(f->instrs[i].addr);
+            if (line_num > 0) {
+                fprintf(fp, "%u %u %u\n", line_num,
+                        f->instrs[i].samples, f->instrs[i].cycles);
             }
         }
 
