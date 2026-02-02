@@ -1499,23 +1499,23 @@ static const char *get_callgrind_func_name(uint16_t addr, const char *irq_ctx) {
 
 /* Generate export filenames by appending extensions to base name.
  * Input: "profile" or "profile.out"
- * Output: call_file = "profile.call", src_file = "profile.src"
+ * Output: call_file = "profile.callgrind", src_file = "profile.asm"
  */
 static void get_export_filenames(const char *base, char *call_file, char *src_file, size_t buf_size) {
     size_t len = strlen(base);
 
-    /* Copy base name and add .call extension */
-    if (len >= buf_size - 6) {
-        len = buf_size - 6;
+    /* Copy base name and add .callgrind extension */
+    if (len >= buf_size - 11) {
+        len = buf_size - 11;
     }
     strncpy(call_file, base, len);
     call_file[len] = '\0';
-    strcat(call_file, ".call");
+    strcat(call_file, ".callgrind");
 
-    /* Copy base name and add .src extension */
+    /* Copy base name and add .asm extension */
     strncpy(src_file, base, len);
     src_file[len] = '\0';
-    strcat(src_file, ".src");
+    strcat(src_file, ".asm");
 }
 
 /* Get just the basename of a path */
@@ -1526,8 +1526,8 @@ static const char *get_basename(const char *path) {
     return last ? last + 1 : path;
 }
 
-/* Write pseudo-source file */
-static int write_pseudo_source(const char *asm_filename) {
+/* Write pseudo-source file with profiling information similar to prof disass */
+static int write_pseudo_source(const char *asm_filename, profiling_counter_t total_cycles) {
     FILE *fp;
     int i;
     uint32_t line_num = 1;
@@ -1541,9 +1541,16 @@ static int write_pseudo_source(const char *asm_filename) {
     /* Sort instructions by address */
     qsort(global_instrs, global_instrs_count, sizeof(instr_entry_t), instr_addr_compare);
 
+    /* Write header similar to prof disass output */
+    fprintf(fp, ";       Cycles      %%   Avg  Address            Disassembly\n");
+    fprintf(fp, "; ------------ ------ ----- --------  --------------------------\n");
+
     /* Assign line numbers and write pseudo-source */
     for (i = 0; i < global_instrs_count; i++) {
         uint16_t addr = global_instrs[i].addr;
+        profiling_counter_t cycles = global_instrs[i].total_cycles;
+        profiling_counter_t samples = global_instrs[i].total_samples;
+        double pct = total_cycles > 0 ? 100.0 * cycles / total_cycles : 0.0;
         uint8_t op, p1, p2;
         unsigned opc_size;
         const char *disasm;
@@ -1559,14 +1566,24 @@ static int write_pseudo_source(const char *asm_filename) {
         /* Get disassembly */
         disasm = mon_disassemble_to_string_ex(default_memspace, addr, op, p1, p2, 0, 1, &opc_size);
 
-        /* Write line: "line  $ADDR: XX XX XX  DISASSEMBLY" */
-        /* Format bytes based on instruction size */
+        /* Write line with profiling info:
+         * "  cycles  pct%  avg  $ADDR: XX XX XX  DISASSEMBLY"
+         * Similar to prof disass output format */
         if (opc_size == 1) {
-            fprintf(fp, "%6u  $%04X: %02X        %s\n", line_num, addr, op, disasm);
+            fprintf(fp, "  %'10u %5.1f%% %4.1f  $%04X: %02X        %s\n",
+                    cycles, pct,
+                    samples > 0 ? (double)cycles / samples : 0.0,
+                    addr, op, disasm);
         } else if (opc_size == 2) {
-            fprintf(fp, "%6u  $%04X: %02X %02X     %s\n", line_num, addr, op, p1, disasm);
+            fprintf(fp, "  %'10u %5.1f%% %4.1f  $%04X: %02X %02X     %s\n",
+                    cycles, pct,
+                    samples > 0 ? (double)cycles / samples : 0.0,
+                    addr, op, p1, disasm);
         } else {
-            fprintf(fp, "%6u  $%04X: %02X %02X %02X  %s\n", line_num, addr, op, p1, p2, disasm);
+            fprintf(fp, "  %'10u %5.1f%% %4.1f  $%04X: %02X %02X %02X  %s\n",
+                    cycles, pct,
+                    samples > 0 ? (double)cycles / samples : 0.0,
+                    addr, op, p1, p2, disasm);
         }
 
         line_num++;
@@ -1594,7 +1611,7 @@ void mon_profile_export(const char *filename)
 
     if (!init_profiling_data()) return;
 
-    /* Generate .call and .src filenames */
+    /* Generate .callgrind and .asm filenames */
     get_export_filenames(filename, call_filename, src_filename, sizeof(call_filename));
     src_basename = get_basename(src_filename);
 
@@ -1612,8 +1629,8 @@ void mon_profile_export(const char *filename)
         total_samples += global_instrs[i].total_samples;
     }
 
-    /* Write pseudo-source file */
-    if (!write_pseudo_source(src_filename)) {
+    /* Write pseudo-source file with profiling info */
+    if (!write_pseudo_source(src_filename, root_context->total_cycles)) {
         free_callgrind_data();
         return;
     }
@@ -1641,13 +1658,15 @@ void mon_profile_export(const char *filename)
     fprintf(fp, "# Cy = CPU cycles\n");
     fprintf(fp, "summary: %u %u\n\n", total_samples, root_context->total_cycles);
 
+    /* Set source file once - all functions are in the same pseudo-source */
+    fprintf(fp, "fl=%s\n\n", src_basename);
+
     /* Write function data */
     for (f = callgrind_funcs; f; f = f->next) {
         callgrind_call_t *c;
         const char *func_name = get_callgrind_func_name(f->addr, f->irq_ctx);
 
-        /* Function definition - reference pseudo-source file */
-        fprintf(fp, "fl=%s\n", src_basename);
+        /* Function definition */
         fprintf(fp, "fn=%s\n", func_name);
 
         /* Sort instructions by address for consistent output */
@@ -1686,7 +1705,6 @@ void mon_profile_export(const char *filename)
                 callee_line = 1;
             }
 
-            fprintf(fp, "cfl=%s\n", src_basename);
             fprintf(fp, "cfn=%s\n", callee_name);
             fprintf(fp, "calls=%u %u\n", c->count, callee_line);
             /* Cost attributed to the call site: samples=count, cycles */
