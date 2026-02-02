@@ -1021,7 +1021,8 @@ static void print_disass_context(profiling_context_t *context, bool print_contex
 
                         if (print_contexts && subcontext) {
                             print_context_id(subcontext, context_column);
-                        } else if (is_branch_instruction(c->memory_bank_config, addr, &opc_size, &dest_addr)) {
+                        } else if (page->data[j].num_samples > 0 &&
+                                   is_branch_instruction(c->memory_bank_config, addr, &opc_size, &dest_addr)) {
                             uint16_t next_inst = addr + opc_size;
 
                             /* 6502 specific:
