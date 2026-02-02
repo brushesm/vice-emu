@@ -621,7 +621,7 @@ monitor_misc_rules: CMD_DISK rest_of_line end_cmd
                      { mon_profile_clear($3); }
                   | CMD_PROFILE PROFILE_CONTEXT d_number end_cmd
                      { mon_profile_disass_context($3); }
-                  | CMD_PROFILE PROFILE_EXPORT STRING end_cmd
+                  | CMD_PROFILE PROFILE_EXPORT filename end_cmd
                      { mon_profile_export($3); }
                   ;
 
