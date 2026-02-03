@@ -1249,7 +1249,6 @@ static int global_instrs_capacity = 0;
 typedef struct callgrind_call_s {
     uint16_t caller_addr;   /* Address of call site (for line lookup) */
     uint16_t callee_addr;
-    char callee_irq_ctx[64];
     profiling_counter_t cycles;
     profiling_counter_t count;
     struct callgrind_call_s *next;
@@ -1262,10 +1261,9 @@ typedef struct func_instr_s {
     profiling_counter_t samples;
 } func_instr_t;
 
-/* Helper structure for callgrind export - function data */
+/* Helper structure for callgrind export - function data (aggregated by address) */
 typedef struct callgrind_func_s {
     uint16_t addr;
-    char irq_ctx[64];
     profiling_counter_t self_cycles;
     profiling_counter_t self_samples;
     profiling_counter_t total_cycles;
@@ -1340,17 +1338,15 @@ static uint32_t get_line_for_addr(uint16_t addr) {
     return entry ? entry->line_num : 0;
 }
 
-static callgrind_func_t *find_or_create_callgrind_func(uint16_t addr, const char *irq_ctx) {
+static callgrind_func_t *find_or_create_callgrind_func(uint16_t addr) {
     callgrind_func_t *f = callgrind_funcs;
     while (f) {
-        if (f->addr == addr && strcmp(f->irq_ctx, irq_ctx) == 0) return f;
+        if (f->addr == addr) return f;
         f = f->next;
     }
     /* Create new */
     f = lib_calloc(1, sizeof(callgrind_func_t));
     f->addr = addr;
-    strncpy(f->irq_ctx, irq_ctx, sizeof(f->irq_ctx) - 1);
-    f->irq_ctx[sizeof(f->irq_ctx) - 1] = '\0';
     f->next = callgrind_funcs;
     callgrind_funcs = f;
     return f;
@@ -1384,14 +1380,13 @@ static void add_func_instr(callgrind_func_t *func, uint16_t addr,
 }
 
 static void add_callgrind_call(callgrind_func_t *caller, uint16_t caller_site_addr,
-                               uint16_t callee_addr, const char *callee_irq_ctx,
+                               uint16_t callee_addr,
                                profiling_counter_t cycles, profiling_counter_t count) {
     callgrind_call_t *c = caller->calls;
     while (c) {
-        /* Include caller_site_addr in match to preserve distinct call sites */
+        /* Match by call site and callee address */
         if (c->caller_addr == caller_site_addr &&
-            c->callee_addr == callee_addr &&
-            strcmp(c->callee_irq_ctx, callee_irq_ctx) == 0) {
+            c->callee_addr == callee_addr) {
             c->cycles += cycles;
             c->count += count;
             return;
@@ -1402,25 +1397,24 @@ static void add_callgrind_call(callgrind_func_t *caller, uint16_t caller_site_ad
     c = lib_calloc(1, sizeof(callgrind_call_t));
     c->caller_addr = caller_site_addr;
     c->callee_addr = callee_addr;
-    strncpy(c->callee_irq_ctx, callee_irq_ctx, sizeof(c->callee_irq_ctx) - 1);
-    c->callee_irq_ctx[sizeof(c->callee_irq_ctx) - 1] = '\0';
     c->cycles = cycles;
     c->count = count;
     c->next = caller->calls;
     caller->calls = c;
 }
 
-/* Collect all instruction data from context tree */
+/* Collect all instruction data from context tree.
+ * Aggregates all contexts calling the same function address into one entry.
+ */
 static void collect_callgrind_data(profiling_context_t *context,
                                     profiling_context_t *parent_context) {
     callgrind_func_t *func;
     uint16_t func_addr = context->pc_dst;
-    const char *irq_ctx = get_interrupt_context(context);
     int page_idx, addr_idx;
     profiling_context_t *mem_ctx;
 
-    /* Get or create function entry */
-    func = find_or_create_callgrind_func(func_addr, irq_ctx);
+    /* Get or create function entry (aggregated by address only) */
+    func = find_or_create_callgrind_func(func_addr);
     func->total_cycles += context->total_cycles;
     func->num_calls += context->num_enters > 0 ? context->num_enters : 1;
 
@@ -1454,10 +1448,9 @@ static void collect_callgrind_data(profiling_context_t *context,
 
     /* Add call from parent (if not root) */
     if (parent_context != NULL) {
-        const char *parent_irq_ctx = get_interrupt_context(parent_context);
-        callgrind_func_t *parent = find_or_create_callgrind_func(parent_context->pc_dst, parent_irq_ctx);
+        callgrind_func_t *parent = find_or_create_callgrind_func(parent_context->pc_dst);
         /* Use pc_src as the call site address */
-        add_callgrind_call(parent, context->pc_src, func_addr, irq_ctx,
+        add_callgrind_call(parent, context->pc_src, func_addr,
                           context->total_cycles,
                           context->num_enters > 0 ? context->num_enters : 1);
     }
@@ -1502,16 +1495,9 @@ static void free_callgrind_data(void) {
     global_instrs_capacity = 0;
 }
 
-/* Build function name with interrupt context if present */
-static const char *get_callgrind_func_name(uint16_t addr, const char *irq_ctx) {
-    static char buf[128];
-    const char *name = get_function_name(addr);
-
-    if (irq_ctx[0] != '\0') {
-        snprintf(buf, sizeof(buf), "%s %s", name, irq_ctx);
-        return buf;
-    }
-    return name;
+/* Get function name for Callgrind output */
+static const char *get_callgrind_func_name(uint16_t addr) {
+    return get_function_name(addr);
 }
 
 /* Generate export filenames by appending extensions to base name.
@@ -1683,7 +1669,7 @@ void mon_profile_export(const char *filename)
     /* Write function data */
     for (f = callgrind_funcs; f; f = f->next) {
         callgrind_call_t *c;
-        const char *func_name = get_callgrind_func_name(f->addr, f->irq_ctx);
+        const char *func_name = get_callgrind_func_name(f->addr);
 
         /* Function definition */
         fprintf(fp, "fn=%s\n", func_name);
@@ -1705,7 +1691,7 @@ void mon_profile_export(const char *filename)
 
         /* Calls to other functions */
         for (c = f->calls; c; c = c->next) {
-            const char *callee_name = get_callgrind_func_name(c->callee_addr, c->callee_irq_ctx);
+            const char *callee_name = get_callgrind_func_name(c->callee_addr);
             uint32_t caller_line;
             uint32_t callee_line = get_line_for_addr(c->callee_addr);
 
