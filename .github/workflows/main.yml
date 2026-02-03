@@ -19,21 +19,20 @@ jobs:
           xcodebuild -version
 
       - name: Install dependencies via Homebrew
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
-          # Update Homebrew
-          brew update
-
-          # Install build tools
-          brew install autoconf automake pkg-config texinfo dos2unix
+          # Install build tools (use || true to ignore "already installed" messages)
+          brew install autoconf automake pkg-config texinfo dos2unix 2>/dev/null || true
 
           # Install xa65 cross-assembler (needed for building ROMs)
-          brew install xa
+          brew install xa 2>/dev/null || true
 
           # Install GTK3 and related dependencies
-          brew install gtk+3 librsvg adwaita-icon-theme glew
+          brew install gtk+3 librsvg adwaita-icon-theme glew 2>/dev/null || true
 
           # Install optional dependencies for full functionality
-          brew install lame flac libvorbis giflib libpcap
+          brew install lame flac libvorbis giflib libpcap 2>/dev/null || true
 
       - name: Generate configure script
         working-directory: vice
