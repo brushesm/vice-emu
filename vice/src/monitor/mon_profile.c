@@ -1226,7 +1226,7 @@ static const char *get_interrupt_context(profiling_context_t *context) {
  * CALLGRIND EXPORT WITH PSEUDO-SOURCE
  *
  * This generates two files:
- * 1. A pseudo-source .asm file with one instruction per line
+ * 1. A pseudo-source .src file with one instruction per line
  * 2. A Callgrind file referencing the pseudo-source with line numbers
  *
  * This allows Callgrind viewers (KCachegrind, Blacksmith) to show
@@ -1502,7 +1502,7 @@ static const char *get_callgrind_func_name(uint16_t addr) {
 
 /* Generate export filenames by appending extensions to base name.
  * Input: "profile" or "profile.out"
- * Output: call_file = "profile.callgrind", src_file = "profile.asm"
+ * Output: call_file = "profile.callgrind", src_file = "profile.src"
  */
 static void get_export_filenames(const char *base, char *call_file, char *src_file, size_t buf_size) {
     size_t len = strlen(base);
@@ -1515,10 +1515,10 @@ static void get_export_filenames(const char *base, char *call_file, char *src_fi
     call_file[len] = '\0';
     strcat(call_file, ".callgrind");
 
-    /* Copy base name and add .asm extension */
+    /* Copy base name and add .src extension */
     strncpy(src_file, base, len);
     src_file[len] = '\0';
-    strcat(src_file, ".asm");
+    strcat(src_file, ".src");
 }
 
 /* Get just the basename of a path */
@@ -1616,7 +1616,7 @@ void mon_profile_export(const char *filename)
 
     if (!init_profiling_data()) return;
 
-    /* Generate .callgrind and .asm filenames */
+    /* Generate .callgrind and .src filenames */
     get_export_filenames(filename, call_filename, src_filename, sizeof(call_filename));
     src_basename = get_basename(src_filename);
 
